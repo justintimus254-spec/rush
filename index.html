@@ -658,6 +658,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 // ================= GAME DATA =================
 const TS = 10; // kitchen seconds per real second
 const LAST_ORDERS = 240; // real seconds into a shift when tickets stop printing
@@ -4762,8 +4763,10 @@ const BRUSHED_DETAIL = detailMaps(brushed, 0.9, (l, x, y) => 0.26 + (1 - l) * 0.
 const STAINLESS = new THREE.MeshStandardMaterial({ map: brushed, color: 0xd6dde1, metalness: 0.9, roughness: 0.33, side: THREE.DoubleSide, ...BRUSHED_DETAIL });
 Object.assign(M.steel, { map: brushed, ...BRUSHED_DETAIL });
 M.steel.needsUpdate = true;
+STAINLESS.userData.surface = M.steel.userData.surface = 'steel'; // real scanned maps replace these once loaded (26-surfaces)
 Object.assign(M.cabinet, { map: brushed, ...BRUSHED_DETAIL, normalScale: new THREE.Vector2(0.35, 0.35) }); // doors: a finer grain than the worktops
 M.cabinet.needsUpdate = true;
+M.cabinet.userData.surface = 'cabinet';
 
 // The room is a rectangle: front wall behind the stove, the dining room through the doors at the back.
 const ROOM = { x0: -2.3, x1: 2.3, z0: -1.45, z1: 2.6 };
@@ -4798,13 +4801,19 @@ const wallGroup = (x, z, rot) => placeGroup({ x, z, rot }, decorRoot);
   const floor = add(
     decorRoot,
     new THREE.PlaneGeometry(RW, RD),
-    new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.5, metalness: 0, ...detailMaps(floorTex, 2.2, l => (l < 0.16 ? 0.92 : 0.62 - (l - 0.3) * 0.6)) }), // matte grout, tiles worn glossy where they're lighter
+    new THREE.MeshStandardMaterial({
+      map: floorTex,
+      roughness: 0.5,
+      metalness: 0,
+      ...detailMaps(floorTex, 2.2, l => (l < 0.16 ? 0.92 : 0.62 - (l - 0.3) * 0.6)),
+    }), // matte grout, tiles worn glossy where they're lighter
     0,
     0,
     RCZ,
     -Math.PI / 2,
   );
   floor.material.userData.receiveShadow = true;
+  Object.assign(floor.material.userData, { surface: 'floor', surfaceSize: [RW, RD] });
 
   // Anti-fatigue rubber mat down the aisle
   const matTex = canvasTex(
@@ -4824,7 +4833,17 @@ const wallGroup = (x, z, rot) => placeGroup({ x, z, rot }, decorRoot);
     2.9 / 0.4,
     1.0 / 0.4,
   );
-  const mat = add(decorRoot, new THREE.PlaneGeometry(2.9, 1.0), new THREE.MeshStandardMaterial({ map: matTex, roughness: 0.95, ...detailMaps(matTex, 3, () => 0.9) }), 0.06, 0.006, 0.03, -Math.PI / 2, 0, 0.035); // kicked a little askew over the years
+  const mat = add(
+    decorRoot,
+    new THREE.PlaneGeometry(2.9, 1.0),
+    new THREE.MeshStandardMaterial({ map: matTex, roughness: 0.95, ...detailMaps(matTex, 3, () => 0.9) }),
+    0.06,
+    0.006,
+    0.03,
+    -Math.PI / 2,
+    0,
+    0.035,
+  ); // kicked a little askew over the years
   mat.material.userData.receiveShadow = true;
 
   // Floor drains
@@ -4871,7 +4890,9 @@ const wallGroup = (x, z, rot) => placeGroup({ x, z, rot }, decorRoot);
       new THREE.PlaneGeometry(len, CEIL),
       (() => {
         const t = canvasTex(512, 256, tileDraw, len / 0.6, CEIL / 0.3);
-        return new THREE.MeshStandardMaterial({ map: t, color: 0xdedbd4, roughness: 0.28, ...detailMaps(t, 2.6, l => (l < 0.8 ? 0.85 : 0.14)) }); // glazed tiles, rough grout
+        const m = new THREE.MeshStandardMaterial({ map: t, color: 0xdedbd4, roughness: 0.28, ...detailMaps(t, 2.6, l => (l < 0.8 ? 0.85 : 0.14)) }); // glazed tiles, rough grout
+        Object.assign(m.userData, { surface: 'wall', surfaceSize: [len, CEIL] });
+        return m;
       })(),
       0,
       CEIL / 2,
@@ -6704,6 +6725,7 @@ const mixVol = mix => Object.entries(mix).reduce((a, [id, v]) => a + (POURS[id].
     new THREE.MeshStandardMaterial({ map: brick, roughness: 0.9, side: THREE.BackSide }),
   );
   wall.position.y = 2.15;
+  Object.assign(wall.material.userData, { surface: 'brick', surfaceSize: [Math.PI * 5, 2.1] });
   barRoot.add(wall);
   const panels = canvasTex(
     512,
@@ -12851,6 +12873,77 @@ function applyBakedLight(bakedScene, lightMap) {
   console.info(`Baked lighting on ${bakedLight.applied} meshes.`);
 }
 loadBakedLight().catch(e => console.warn('Baked lighting unavailable; keeping live lighting.', e));
+// ================= REAL SURFACES: scanned tile, steel and brick (CC0; see assets/textures/CREDITS.md) =================
+// The room is first drawn with the textures painted in code (08-kitchen-room, 14-bar), so it never waits on a download.
+// Photo-scanned maps replace them when they arrive: colour, surface relief (normal map) and gloss (roughness map).
+// They're KTX2, which the headset keeps compressed on the GPU: a fraction of the memory a JPG or PNG would take.
+// Materials opt in with userData.surface (and userData.surfaceSize in metres, so tiles come out the right real size).
+// The ceiling keeps its painted drop tiles: a scanned one lost its grid at a distance and read as corrugated metal.
+// ?painted in the URL keeps the painted look, for comparison.
+const SURFACE_DIR = 'assets/textures/';
+const SURFACES = {
+  //        tex: which maps   size: metres one copy of the texture covers (or a fixed repeat)   normal: relief strength
+  wall: { tex: 'wall', size: 1.2, color: 0xffffff, normal: 1 }, // 15 x 10 cm tiles, grimy grout
+  floor: { tex: 'floor', size: 2.26, color: 0xffffff, normal: 1.3 },
+  steel: { tex: 'steel', repeat: 2, color: 0xffffff, normal: 0.5 }, // the scan is a dark grey; steel needs to stay bright
+  cabinet: { tex: 'steel', repeat: 3, color: 0xdce2e6, normal: 0.25 },
+  brick: { tex: 'brick', size: 1.4, color: 0xd8d0c8, normal: 1.2 },
+};
+const surface = { ready: false, maps: {}, copies: {} };
+let BASIS_PATH = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/';
+try {
+  BASIS_PATH = import.meta.resolve('three/addons/libs/basis/'); // follows the import map, so the app uses its own copy
+} catch {}
+// One copy of a map per repeat (the picture is shared on the GPU; only the tiling differs).
+function surfaceMap(tex, kind, rx, ry) {
+  const key = `${tex}.${kind}.${rx.toFixed(3)}.${ry.toFixed(3)}`;
+  if (!surface.copies[key]) {
+    const t = surface.maps[tex][kind].clone();
+    t.repeat.set(rx, ry);
+    surface.copies[key] = t;
+  }
+  return surface.copies[key];
+}
+function dressSurface(m) {
+  const s = SURFACES[m.userData.surface];
+  if (!s || !surface.ready || m.userData.dressed) return;
+  const [w = 1, h = 1] = m.userData.surfaceSize || [];
+  const rx = s.repeat ?? w / s.size,
+    ry = s.repeat ?? h / s.size;
+  m.map = surfaceMap(s.tex, 'color', rx, ry);
+  m.normalMap = surfaceMap(s.tex, 'normal', rx, ry);
+  m.normalScale = new THREE.Vector2(s.normal, s.normal);
+  m.roughnessMap = surfaceMap(s.tex, 'rough', rx, ry);
+  m.roughness = 1;
+  m.color.set(s.color);
+  m.userData.dressed = true;
+  m.needsUpdate = true;
+}
+function dressAll() {
+  scene.traverse(o => {
+    if (!o.material) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) dressSurface(m);
+  });
+  for (const m of [M.steel, M.cabinet, STAINLESS]) dressSurface(m); // shared materials also used by things made later
+}
+async function loadSurfaces() {
+  if (/[?&]painted\b/.test(location.search)) return;
+  const loader = new KTX2Loader().setTranscoderPath(BASIS_PATH).detectSupport(renderer);
+  await Promise.all(
+    ['wall', 'floor', 'steel', 'brick'].flatMap(tex =>
+      ['color', 'normal', 'rough'].map(async kind => {
+        const t = await loader.loadAsync(`${SURFACE_DIR}${tex}_${kind}.ktx2`);
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.anisotropy = 8;
+        (surface.maps[tex] ??= {})[kind] = t;
+      }),
+    ),
+  );
+  surface.ready = true;
+  dressAll();
+  console.info('Real surfaces loaded.');
+}
+loadSurfaces().catch(e => console.warn('Real surfaces unavailable; keeping the painted ones.', e));
 // ================= A LIVING KITCHEN: hot metal, grease, knives, low hoods, the bell, the radio, streaks and surprises =================
 function sfxClang() {
   beep(520, 0.25, 'square', 0.03);
