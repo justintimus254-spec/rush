@@ -18303,7 +18303,20 @@ if (/[?&]debug\b/.test(location.search))
   };
 </script>
 <script>
-  if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // Phones keep an installed app open in the background for days, so check for a new version whenever it comes back,
+  // and switch to it on the next return after a long break (never mid-game).
+  if ('serviceWorker' in navigator) addEventListener('load', () => {
+    const sw = navigator.serviceWorker;
+    let updated = false, hiddenAt = 0;
+    sw.addEventListener('controllerchange', () => { updated = true; });
+    sw.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { hiddenAt = Date.now(); return; }
+        if (updated && Date.now() - hiddenAt > 5 * 60e3) location.reload();
+        else reg.update().catch(() => {});
+      });
+    }).catch(() => {});
+  });
 </script>
 </body>
 </html>
